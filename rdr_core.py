@@ -15,7 +15,18 @@ from pathlib import Path
 from typing import Any, Optional
 
 APP_TITLE = "RDR Studio — Sistem Rekomendasi Pakar"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
+
+NUMERIC_OPERATORS = ("ge", "le", "gt", "lt", "eq", "ne")
+CATEGORICAL_OPERATORS = ("eq", "ne")
+OPERATOR_SYMBOLS = {
+    "eq": "=",
+    "ne": "≠",
+    "gt": ">",
+    "ge": "≥",
+    "lt": "<",
+    "le": "≤",
+}
 
 
 def make_sample_kb() -> dict[str, Any]:
@@ -45,40 +56,93 @@ def make_sample_kb() -> dict[str, Any]:
     }
 
 
-def new_knowledge_base() -> dict[str, Any]:
-    """Return a blank knowledge base with a single default root rule."""
+def new_knowledge_base(domain: str = "Domain baru", default_conclusion: str = "Kesimpulan default belum diisi.") -> dict[str, Any]:
+    """Return a blank knowledge base with a single default root rule (t -> kesimpulan default)."""
     return {
         "version": 1,
-        "domain": "Domain baru",
+        "domain": domain.strip() or "Domain baru",
         "attributes": [],
         "root": {
-            "id": "R0", "condition": {"attribute": None, "operator": "always", "value": True},
-            "conclusion": "Kesimpulan default belum diisi.", "key_case": None,
-            "true_child": None, "false_child": None,
+            "id": "R0",
+            "condition": {"attribute": None, "operator": "always", "value": True},
+            "conclusion": default_conclusion.strip() or "Kesimpulan default belum diisi.",
+            "key_case": None,
+            "true_child": None,
+            "false_child": None,
         },
     }
+
+
+def _format_value(value: Any) -> str:
+    if isinstance(value, float) and not isinstance(value, bool) and math.isfinite(value):
+        return f"{value:g}"
+    return str(value)
 
 
 def condition_text(condition: dict[str, Any]) -> str:
     op = condition.get("operator", "always")
     if op == "always":
         return "SELALU BENAR (t)"
+    if op == "and":
+        parts = []
+        for sub in condition.get("conditions", []):
+            text = condition_text(sub)
+            parts.append(f"({text})" if sub.get("operator") == "and" else text)
+        return " DAN ".join(parts) if parts else "—"
     attr = condition.get("attribute", "?")
-    value = condition.get("value")
-    symbols = {"eq": "=", "ne": "≠", "gt": ">", "ge": "≥", "lt": "<", "le": "≤"}
-    return f"{attr} {symbols.get(op, op)} {value}"
+    value = _format_value(condition.get("value"))
+    return f"{attr} {OPERATOR_SYMBOLS.get(op, op)} {value}"
 
 
-def evaluate_condition(condition: dict[str, Any], case: dict[str, Any]) -> bool:
+def combine_conditions(conditions: list[dict[str, Any]]) -> dict[str, Any]:
+    """Gabungkan satu atau beberapa kondisi atomik menjadi satu kondisi (atomik atau konjungsi DAN)."""
+    flattened: list[dict[str, Any]] = []
+    for cond in conditions:
+        if cond.get("operator") == "and":
+            flattened.extend(cond.get("conditions", []))
+        else:
+            flattened.append(cond)
+    if not flattened:
+        raise ValueError("Pilih minimal satu kondisi pembeda.")
+    unique: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    for cond in flattened:
+        key = json.dumps(cond, sort_keys=True, ensure_ascii=False)
+        if key not in seen_keys:
+            seen_keys.add(key)
+            unique.append(deepcopy(cond))
+    if len(unique) == 1:
+        return unique[0]
+    return {"operator": "and", "conditions": unique}
+
+
+def _is_number(val: Any) -> bool:
+    return isinstance(val, (int, float)) and not isinstance(val, bool)
+
+
+def evaluate_condition(condition: dict[str, Any], case: Optional[dict[str, Any]]) -> bool:
     op = condition.get("operator", "always")
     if op == "always":
         return True
+    if not case:
+        return False
+    if op == "and":
+        sub_conditions = condition.get("conditions") or []
+        return bool(sub_conditions) and all(evaluate_condition(sub, case) for sub in sub_conditions)
     attr = condition.get("attribute")
     if attr not in case:
         return False
     actual = case[attr]
     expected = condition.get("value")
     if op in {"eq", "ne"}:
+        if _is_number(actual) or _is_number(expected):
+            try:
+                a_num, b_num = float(actual), float(expected)
+                if math.isfinite(a_num) and math.isfinite(b_num):
+                    matched = a_num == b_num
+                    return matched if op == "eq" else not matched
+            except (TypeError, ValueError):
+                pass
         result = str(actual).strip().casefold() == str(expected).strip().casefold()
         return result if op == "eq" else not result
     try:
@@ -122,11 +186,13 @@ def get_next_node_id(root: dict[str, Any]) -> str:
 
 
 def infer_case(root: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
-    """Traverse the binary rule tree and return the last conclusion whose condition is true.
+    """Telusuri binary tree RDR dan kembalikan kesimpulan terakhir yang kondisinya terpenuhi.
 
-    A true condition activates that node's conclusion and follows its true-child.
-    A false condition preserves the last active conclusion and follows false-child.
-    Traversal stops when the selected child does not exist.
+    - Kondisi terpenuhi (True): kesimpulan node ini menganulir kesimpulan aktif sebelumnya,
+      lalu penelusuran berlanjut ke anak kanan (true_child / perkecualian).
+    - Kondisi tidak terpenuhi (False): kesimpulan aktif sebelumnya tetap berlaku,
+      lalu penelusuran berlanjut ke anak kiri (false_child).
+    - Penelusuran berhenti saat cabang anak yang dituju masih kosong (None).
     """
     current = root
     active_node: Optional[dict[str, Any]] = None
@@ -134,16 +200,20 @@ def infer_case(root: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
     frontier_node = root
     frontier_side = "true_child"
     while current is not None:
+        prev_active_id = active_node["id"] if active_node is not None else None
         matched = evaluate_condition(current["condition"], case)
         side = "true_child" if matched else "false_child"
         if matched:
             active_node = current
+        current_active_id = active_node["id"] if active_node is not None else root["id"]
         trace.append({
             "node_id": current["id"],
             "condition": condition_text(current["condition"]),
             "matched": matched,
             "branch": "KANAN / TRUE" if matched else "KIRI / FALSE",
             "activated": matched,
+            "previous_node_id": prev_active_id,
+            "active_node_id": current_active_id,
             "conclusion": current.get("conclusion", ""),
         })
         child = current.get(side)
@@ -153,7 +223,7 @@ def infer_case(root: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
             break
         current = child
     if active_node is None:
-        # The seeded root condition is always true; this is a defensive fallback.
+        # Kondisi root selalu t (benar); fallback defensif bila struktur dibuat manual.
         active_node = root
     return {
         "conclusion": active_node.get("conclusion", ""),
@@ -165,14 +235,72 @@ def infer_case(root: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_candidates(attributes: list[dict[str, Any]], case: dict[str, Any], key_case: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build predicates true for the new case and false for its prior conclusion's key case."""
+def _normalize_number(num: float) -> int | float:
+    return int(num) if num.is_integer() else num
+
+
+def build_candidates(
+    attributes: list[dict[str, Any]],
+    case: dict[str, Any],
+    key_case: Optional[dict[str, Any]] = None,
+) -> list[dict[str, Any]]:
+    """Bangun daftar kandidat kondisi yang dipenuhi kasus baru dan tidak dipenuhi kasus kunci.
+
+    Apabila rule yang dianulir belum memiliki kasus kunci spesifik (misalnya rule default R0
+    pada kasus pertama, atau atribut baru ditambahkan kemudian), maka kasus kunci untuk atribut
+    tersebut dianggap kosong sehingga setiap kondisi yang dipenuhi oleh kasus baru bernilai
+    benar pada kasus baru dan salah pada kasus kunci.
+    """
     candidates: list[dict[str, Any]] = []
+    seen: set[str] = set()
+
+    def add_candidate(condition: dict[str, Any], label: str):
+        if not evaluate_condition(condition, case):
+            return
+        if key_case and evaluate_condition(condition, key_case):
+            return
+        sig = json.dumps(condition, sort_keys=True, ensure_ascii=False)
+        if sig not in seen:
+            seen.add(sig)
+            candidates.append({"condition": condition, "label": label})
+
     for attr in attributes:
         name = attr["name"]
-        if name not in case or name not in key_case:
+        if name not in case:
             continue
-        new_value, old_value = case[name], key_case[name]
+        new_value = case[name]
+        has_old = bool(key_case) and (name in key_case) and (key_case[name] is not None)
+
+        if not has_old:
+            if attr["type"] == "numeric":
+                try:
+                    new_num = float(new_value)
+                except (TypeError, ValueError):
+                    continue
+                if not math.isfinite(new_num):
+                    continue
+                clean_new = _normalize_number(new_num)
+                add_candidate(
+                    {"attribute": name, "operator": "ge", "value": clean_new},
+                    f"{name} ≥ {new_num:g} (kasus baru: {new_num:g}; kasus kunci kosong)",
+                )
+                add_candidate(
+                    {"attribute": name, "operator": "le", "value": clean_new},
+                    f"{name} ≤ {new_num:g} (kasus baru: {new_num:g}; kasus kunci kosong)",
+                )
+                add_candidate(
+                    {"attribute": name, "operator": "eq", "value": clean_new},
+                    f"{name} = {new_num:g} (kasus baru: {new_num:g}; kasus kunci kosong)",
+                )
+            else:
+                text_val = str(new_value)
+                add_candidate(
+                    {"attribute": name, "operator": "eq", "value": text_val},
+                    f'{name} = "{text_val}" (kasus baru: "{text_val}"; kasus kunci kosong)',
+                )
+            continue
+
+        old_value = key_case[name]  # type: ignore[index]
         if attr["type"] == "numeric":
             try:
                 new_num, old_num = float(new_value), float(old_value)
@@ -180,21 +308,101 @@ def build_candidates(attributes: list[dict[str, Any]], case: dict[str, Any], key
                 continue
             if not (math.isfinite(new_num) and math.isfinite(old_num)) or new_num == old_num:
                 continue
-            midpoint = (new_num + old_num) / 2.0
+            midpoint = _normalize_number((new_num + old_num) / 2.0)
+            clean_new = _normalize_number(new_num)
+            clean_old = _normalize_number(old_num)
             if new_num > old_num:
-                condition = {"attribute": name, "operator": "ge", "value": midpoint}
-                detail = f"{name} ≥ {midpoint:g} (kasus baru: {new_num:g}; kasus kunci: {old_num:g})"
+                add_candidate(
+                    {"attribute": name, "operator": "ge", "value": midpoint},
+                    f"{name} ≥ {midpoint:g} (titik tengah; kasus baru: {new_num:g}, kasus kunci: {old_num:g})",
+                )
+                add_candidate(
+                    {"attribute": name, "operator": "ge", "value": clean_new},
+                    f"{name} ≥ {clean_new:g} (minimal nilai kasus baru; kasus kunci: {old_num:g})",
+                )
+                add_candidate(
+                    {"attribute": name, "operator": "gt", "value": clean_old},
+                    f"{name} > {clean_old:g} (di atas kasus kunci {old_num:g}; kasus baru: {new_num:g})",
+                )
             else:
-                condition = {"attribute": name, "operator": "le", "value": midpoint}
-                detail = f"{name} ≤ {midpoint:g} (kasus baru: {new_num:g}; kasus kunci: {old_num:g})"
-            candidates.append({"condition": condition, "label": detail})
+                add_candidate(
+                    {"attribute": name, "operator": "le", "value": midpoint},
+                    f"{name} ≤ {midpoint:g} (titik tengah; kasus baru: {new_num:g}, kasus kunci: {old_num:g})",
+                )
+                add_candidate(
+                    {"attribute": name, "operator": "le", "value": clean_new},
+                    f"{name} ≤ {clean_new:g} (maksimal nilai kasus baru; kasus kunci: {old_num:g})",
+                )
+                add_candidate(
+                    {"attribute": name, "operator": "lt", "value": clean_old},
+                    f"{name} < {clean_old:g} (di bawah kasus kunci {old_num:g}; kasus baru: {new_num:g})",
+                )
         else:
             if str(new_value).strip().casefold() == str(old_value).strip().casefold():
                 continue
-            condition = {"attribute": name, "operator": "eq", "value": str(new_value)}
-            detail = f'{name} = "{new_value}" (kasus kunci: "{old_value}")'
-            candidates.append({"condition": condition, "label": detail})
+            add_candidate(
+                {"attribute": name, "operator": "eq", "value": str(new_value)},
+                f'{name} = "{new_value}" (kasus kunci: "{old_value}")',
+            )
+            add_candidate(
+                {"attribute": name, "operator": "ne", "value": str(old_value)},
+                f'{name} ≠ "{old_value}" (kasus baru: "{new_value}")',
+            )
     return candidates
+
+
+def make_custom_candidate(
+    attributes: list[dict[str, Any]],
+    case: dict[str, Any],
+    key_case: Optional[dict[str, Any]],
+    attr_name: str,
+    operator: str,
+    raw_value: str,
+) -> dict[str, Any]:
+    """Buat dan validasi satu kandidat kondisi kustom dari pakar."""
+    attr = next((a for a in attributes if a["name"] == attr_name), None)
+    if attr is None:
+        raise ValueError(f"Atribut '{attr_name}' tidak ditemukan.")
+    raw_value = raw_value.strip()
+    if not raw_value:
+        raise ValueError("Nilai kondisi wajib diisi.")
+
+    if attr["type"] == "numeric":
+        if operator not in NUMERIC_OPERATORS:
+            raise ValueError("Operator tidak valid untuk atribut numerik.")
+        try:
+            num = float(raw_value.replace(",", "."))
+            if not math.isfinite(num):
+                raise ValueError
+        except ValueError:
+            raise ValueError(f"Nilai untuk atribut numerik '{attr_name}' harus berupa angka yang valid.")
+        parsed_val: Any = _normalize_number(num)
+    else:
+        if operator not in CATEGORICAL_OPERATORS:
+            raise ValueError("Atribut kategorikal hanya mendukung operator '=' atau '≠'.")
+        choices = attr.get("choices") or []
+        if choices:
+            matched_choice = next((c for c in choices if c.casefold() == raw_value.casefold()), None)
+            if matched_choice is None:
+                raise ValueError(f"Nilai '{attr_name}' harus salah satu dari: {', '.join(choices)}.")
+            parsed_val = matched_choice
+        else:
+            parsed_val = raw_value
+
+    condition = {"attribute": attr_name, "operator": operator, "value": parsed_val}
+    text = condition_text(condition)
+    if not evaluate_condition(condition, case):
+        raise ValueError(f"Kondisi '{text}' tidak dipenuhi oleh kasus baru ({attr_name} = {_format_value(case.get(attr_name))}).")
+    if key_case and evaluate_condition(condition, key_case):
+        raise ValueError(
+            f"Kondisi '{text}' juga dipenuhi oleh kasus kunci ({attr_name} = {_format_value(key_case.get(attr_name))}), "
+            "sehingga tidak membedakan kasus baru dari kasus kunci."
+        )
+    old_info = f"kasus kunci: {_format_value(key_case.get(attr_name))}" if (key_case and attr_name in key_case) else "kasus kunci kosong"
+    return {
+        "condition": condition,
+        "label": f"{text} [kustom; kasus baru: {_format_value(case.get(attr_name))}, {old_info}]",
+    }
 
 
 def validate_case(attributes: list[dict[str, Any]], raw_values: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
@@ -202,7 +410,7 @@ def validate_case(attributes: list[dict[str, Any]], raw_values: dict[str, str]) 
     errors: list[str] = []
     for attr in attributes:
         name = attr["name"]
-        raw = raw_values.get(name, "").strip()
+        raw = str(raw_values.get(name, "")).strip()
         if not raw:
             errors.append(f"Atribut '{name}' belum diisi.")
             continue
@@ -211,11 +419,19 @@ def validate_case(attributes: list[dict[str, Any]], raw_values: dict[str, str]) 
                 value = float(raw.replace(",", "."))
                 if not math.isfinite(value):
                     raise ValueError
-                case[name] = value
+                case[name] = _normalize_number(value)
             except ValueError:
                 errors.append(f"Atribut '{name}' harus berupa angka yang valid.")
         else:
-            case[name] = raw
+            choices = attr.get("choices") or []
+            if choices:
+                matched = next((c for c in choices if c.casefold() == raw.casefold()), None)
+                if matched is None:
+                    errors.append(f"Atribut '{name}' harus memilih salah satu dari: {', '.join(choices)}.")
+                    continue
+                case[name] = matched
+            else:
+                case[name] = raw
     return case, errors
 
 
@@ -229,14 +445,27 @@ def parse_attribute(name: str, kind: str, choices_text: str = "") -> dict[str, A
         raise ValueError("Gunakan nama atribut tanpa spasi (contoh: anggaran_juta).")
     if kind not in {"numeric", "categorical"}:
         raise ValueError("Jenis data atribut tidak dikenal.")
-    choices = [x.strip() for x in choices_text.split(",") if x.strip()] if kind == "categorical" else []
+    choices: list[str] = []
+    if kind == "categorical":
+        seen: set[str] = set()
+        for item in choices_text.split(","):
+            cleaned = item.strip()
+            if cleaned and cleaned.casefold() not in seen:
+                seen.add(cleaned.casefold())
+                choices.append(cleaned)
     return {"name": name, "type": kind, "choices": choices}
+
+
+def _condition_references_attribute(condition: dict[str, Any], name: str) -> bool:
+    if condition.get("operator") == "and":
+        return any(_condition_references_attribute(sub, name) for sub in condition.get("conditions", []))
+    return condition.get("attribute") == name
 
 
 def attribute_is_referenced(root: dict[str, Any], name: str) -> bool:
     """True jika atribut dipakai oleh kondisi rule atau kasus kunci mana pun."""
     for node in iter_nodes(root):
-        if node.get("condition", {}).get("attribute") == name:
+        if _condition_references_attribute(node.get("condition", {}), name):
             return True
         if name in (node.get("key_case") or {}):
             return True
@@ -247,19 +476,54 @@ def validate_kb(data: Any):
     """Raise ValueError jika struktur knowledge base tidak valid."""
     if not isinstance(data, dict) or not isinstance(data.get("attributes"), list) or not isinstance(data.get("root"), dict):
         raise ValueError("Struktur utama tidak lengkap")
-    if not data.get("domain"):
+    if not isinstance(data.get("domain"), str) or not data.get("domain", "").strip():
         raise ValueError("Domain kosong")
     attr_types: dict[str, str] = {}
+    seen_folded: set[str] = set()
     for attr in data["attributes"]:
-        if not isinstance(attr, dict) or not attr.get("name") or attr.get("type") not in {"numeric", "categorical"}:
+        if not isinstance(attr, dict) or not isinstance(attr.get("name"), str) or not attr["name"].strip():
             raise ValueError("Definisi atribut tidak valid")
-        normalized_name = str(attr["name"]).casefold()
-        if normalized_name in attr_types:
+        if attr.get("type") not in {"numeric", "categorical"}:
+            raise ValueError("Definisi atribut tidak valid")
+        choices = attr.setdefault("choices", [])
+        if not isinstance(choices, list) or not all(isinstance(c, str) for c in choices):
+            raise ValueError(f"Pilihan kategori pada atribut '{attr['name']}' tidak valid")
+        folded = attr["name"].casefold()
+        if folded in seen_folded:
             raise ValueError("Nama atribut duplikat")
-        attr_types[normalized_name] = attr["type"]
+        seen_folded.add(folded)
+        attr_types[attr["name"]] = attr["type"]
 
     seen_ids: set[str] = set()
-    allowed_ops = {"always", "eq", "ne", "gt", "ge", "lt", "le"}
+    allowed_atomic_ops = {"always", "eq", "ne", "gt", "ge", "lt", "le"}
+
+    def validate_condition_obj(condition: Any, node_id: str, allow_always: bool = True):
+        if not isinstance(condition, dict):
+            raise ValueError(f"Kondisi pada rule {node_id} tidak valid")
+        op = condition.get("operator")
+        if op == "and":
+            subs = condition.get("conditions")
+            if not isinstance(subs, list) or not subs:
+                raise ValueError(f"Kondisi konjungsi pada {node_id} kosong atau tidak valid")
+            for sub in subs:
+                validate_condition_obj(sub, node_id, allow_always=False)
+            return
+        if op not in allowed_atomic_ops or (op == "always" and not allow_always):
+            raise ValueError(f"Operator kondisi pada {node_id} tidak dikenal")
+        if op != "always":
+            attr_name = str(condition.get("attribute", ""))
+            attr_type = attr_types.get(attr_name)
+            if attr_type is None:
+                raise ValueError(f"Atribut '{attr_name}' pada rule {node_id} tidak ditemukan")
+            if attr_type == "categorical" and op not in {"eq", "ne"}:
+                raise ValueError(f"Operator numerik tidak sesuai untuk atribut kategorikal pada {node_id}")
+            if attr_type == "numeric":
+                try:
+                    number = float(condition.get("value"))
+                    if not math.isfinite(number):
+                        raise ValueError
+                except (TypeError, ValueError):
+                    raise ValueError(f"Nilai kondisi numerik pada {node_id} tidak valid")
 
     def validate_node(node: Any):
         if not isinstance(node, dict):
@@ -268,26 +532,9 @@ def validate_kb(data: Any):
         if not node_id or node_id in seen_ids:
             raise ValueError("ID rule kosong atau duplikat")
         seen_ids.add(node_id)
-        if not isinstance(node.get("condition"), dict) or not isinstance(node.get("conclusion"), str) or not node.get("conclusion").strip():
+        if not isinstance(node.get("conclusion"), str) or not node.get("conclusion", "").strip():
             raise ValueError(f"Rule {node_id} tidak valid")
-        condition = node["condition"]
-        op = condition.get("operator")
-        if op not in allowed_ops:
-            raise ValueError(f"Operator kondisi pada {node_id} tidak dikenal")
-        if op != "always":
-            attr_name = str(condition.get("attribute", ""))
-            attr_type = attr_types.get(attr_name.casefold())
-            if attr_type is None:
-                raise ValueError(f"Atribut pada rule {node_id} tidak ditemukan")
-            if attr_type == "categorical" and op not in {"eq", "ne"}:
-                raise ValueError(f"Operator numerik tidak sesuai untuk atribut kategorikal pada {node_id}")
-            if attr_type == "numeric" and op in {"eq", "ne", "gt", "ge", "lt", "le"}:
-                try:
-                    number = float(condition.get("value"))
-                    if not math.isfinite(number):
-                        raise ValueError
-                except (TypeError, ValueError):
-                    raise ValueError(f"Nilai kondisi numerik pada {node_id} tidak valid")
+        validate_condition_obj(node.get("condition"), node_id, allow_always=True)
         key_case = node.get("key_case")
         if key_case is not None and not isinstance(key_case, dict):
             raise ValueError(f"Kasus kunci pada {node_id} tidak valid")
@@ -334,24 +581,33 @@ class RDREngine:
         self.kb = kb if kb is not None else make_sample_kb()
         self.pending: Optional[PendingConsultation] = None
         self.candidates: list[dict[str, Any]] = []
+        self.last_trace: list[dict[str, Any]] = []
+        self.last_result_node_id: Optional[str] = None
 
     # ------------------------------------------------------------------
     # Knowledge base
     # ------------------------------------------------------------------
-    def new_kb(self):
-        self.kb = new_knowledge_base()
-        self.reset_consultation()
+    def new_kb(self, domain: str = "Domain baru", default_conclusion: str = "Kesimpulan default belum diisi."):
+        self.kb = new_knowledge_base(domain=domain, default_conclusion=default_conclusion)
+        self.reset_consultation(clear_highlight=True)
+
+    def load_sample_kb(self):
+        self.kb = make_sample_kb()
+        self.reset_consultation(clear_highlight=True)
 
     def load(self, path):
         self.kb = load_kb(path)
-        self.reset_consultation()
+        self.reset_consultation(clear_highlight=True)
 
     def save(self, path):
         save_kb(self.kb, path)
 
-    def reset_consultation(self):
+    def reset_consultation(self, clear_highlight: bool = False):
         self.pending = None
         self.candidates = []
+        if clear_highlight:
+            self.last_trace = []
+            self.last_result_node_id = None
 
     def apply_settings(self, domain: str, conclusion: str):
         domain = domain.strip()
@@ -362,6 +618,7 @@ class RDREngine:
             raise ValueError("Kesimpulan default tidak boleh kosong.")
         self.kb["domain"] = domain
         self.kb["root"]["conclusion"] = conclusion
+        self.reset_consultation()
 
     # ------------------------------------------------------------------
     # Atribut
@@ -370,6 +627,7 @@ class RDREngine:
         if any(a["name"].casefold() == attr["name"].casefold() for a in self.kb["attributes"]):
             raise ValueError("Nama atribut sudah digunakan.")
         self.kb["attributes"].append(attr)
+        self.reset_consultation()
 
     def update_attribute(self, index: int, attr: dict[str, Any]):
         old = self.kb["attributes"][index]
@@ -381,63 +639,106 @@ class RDREngine:
                 "atau kasus kunci. Pilihan kategori masih dapat diperbarui."
             )
         self.kb["attributes"][index] = attr
+        self.reset_consultation()
 
     def delete_attribute(self, index: int):
         attr = self.kb["attributes"][index]
         if attribute_is_referenced(self.kb["root"], attr["name"]):
             raise ValueError("Atribut ini sudah dipakai oleh rule atau kasus kunci sehingga tidak dapat dihapus.")
         self.kb["attributes"].pop(index)
+        self.reset_consultation()
 
     # ------------------------------------------------------------------
     # Konsultasi dan update knowledge
     # ------------------------------------------------------------------
     def run_consultation(self, raw_values: dict[str, str], customer_name: str = "") -> dict[str, Any]:
+        if not self.kb["attributes"]:
+            raise ValueError("Tambahkan atribut terlebih dahulu.")
         case, errors = validate_case(self.kb["attributes"], raw_values)
         if errors:
             raise ValueError("\n".join(errors))
-        if not self.kb["attributes"]:
-            raise ValueError("Tambahkan atribut terlebih dahulu.")
         inference = infer_case(self.kb["root"], case)
         self.pending = PendingConsultation(case=case, customer_name=customer_name.strip(), inference=inference)
         self.candidates = []
+        self.last_trace = deepcopy(inference["trace"])
+        self.last_result_node_id = inference["result_node_id"]
         return inference
 
     def accept_result(self) -> dict[str, Any]:
-        """Setujui kesimpulan aktif; simpan kasus sebagai kasus kunci bila rule belum memilikinya."""
-        if not self.pending:
-            raise ValueError("Belum ada konsultasi yang dapat dievaluasi.")
-        node = self.pending.inference["result_node"]
-        stored = node.get("key_case") is None
-        if stored:
-            node["key_case"] = deepcopy(self.pending.case)
-        return {"node_id": node["id"], "stored_key_case": stored}
+        """Pakar menyetujui kesimpulan; berikan hasil ke konsumen dan selesaikan proses.
 
-    def prepare_exception(self) -> tuple[str, list[dict[str, Any]]]:
-        """Siapkan kandidat kondisi pembeda untuk rule pengecualian.
-
-        Return ("ok", candidates), ("no_key_case", []), atau ("no_candidates", []).
+        Jika rule kesimpulan aktif belum memiliki kasus kunci (mis. R0), kasus ini
+        disimpan sebagai kasus kunci acuan rule tersebut.
         """
         if not self.pending:
-            raise ValueError("Belum ada konsultasi yang dapat dievaluasi.")
+            raise ValueError("Belum ada konsultasi aktif yang dapat dievaluasi.")
+        node = self.pending.inference["result_node"]
+        customer_name = self.pending.customer_name
+        case_snapshot = deepcopy(self.pending.case)
+        stored = node.get("key_case") is None
+        if stored:
+            node["key_case"] = case_snapshot
+        result = {
+            "node_id": node["id"],
+            "conclusion": node.get("conclusion", ""),
+            "customer_name": customer_name,
+            "stored_key_case": stored,
+        }
+        self.reset_consultation()
+        return result
+
+    def prepare_exception(self) -> tuple[str, list[dict[str, Any]]]:
+        """Siapkan kandidat kondisi pembeda untuk rule perkecualian.
+
+        Return ("ok", candidates) atau ("no_candidates", []).
+        """
+        if not self.pending:
+            raise ValueError("Belum ada konsultasi aktif yang dapat dievaluasi.")
         self.candidates = []
         active_node = self.pending.inference["result_node"]
-        if active_node.get("key_case") is None:
-            return "no_key_case", []
-        candidates = build_candidates(self.kb["attributes"], self.pending.case, active_node["key_case"])
+        key_case = active_node.get("key_case")
+        candidates = build_candidates(self.kb["attributes"], self.pending.case, key_case)
         if not candidates:
             return "no_candidates", []
         self.candidates = candidates
         return "ok", candidates
 
-    def save_exception(self, candidate_index: int, conclusion: str) -> dict[str, Any]:
-        """Tambahkan rule pengecualian ke pohon dan kembalikan info penempatannya."""
+    def add_custom_candidate(self, attr_name: str, operator: str, raw_value: str) -> dict[str, Any]:
+        """Tambahkan satu kandidat kondisi kustom yang tervalidasi ke daftar kandidat aktif."""
         if not self.pending:
-            raise ValueError("Belum ada konsultasi yang dapat dievaluasi.")
+            raise ValueError("Belum ada konsultasi aktif yang dapat dievaluasi.")
+        active_node = self.pending.inference["result_node"]
+        candidate = make_custom_candidate(
+            self.kb["attributes"],
+            self.pending.case,
+            active_node.get("key_case"),
+            attr_name,
+            operator,
+            raw_value,
+        )
+        sig = json.dumps(candidate["condition"], sort_keys=True, ensure_ascii=False)
+        for existing in self.candidates:
+            if json.dumps(existing["condition"], sort_keys=True, ensure_ascii=False) == sig:
+                return existing
+        self.candidates.append(candidate)
+        return candidate
+
+    def save_exception(self, candidate_indices: int | list[int], conclusion: str) -> dict[str, Any]:
+        """Tambahkan rule perkecualian ke binary tree, verifikasi hasilnya, dan selesaikan konsultasi."""
+        if not self.pending:
+            raise ValueError("Belum ada konsultasi aktif yang dapat dievaluasi.")
         conclusion = conclusion.strip()
         if not conclusion:
-            raise ValueError("Masukkan kesimpulan yang diberikan oleh pakar.")
-        if candidate_index < 0 or candidate_index >= len(self.candidates):
-            raise ValueError("Pilih salah satu kondisi pembeda.")
+            raise ValueError("Masukkan kesimpulan rekomendasi yang diberikan oleh pakar.")
+
+        indices = [candidate_indices] if isinstance(candidate_indices, int) else list(candidate_indices)
+        if not indices:
+            raise ValueError("Pilih minimal satu kondisi pembeda.")
+        for idx in indices:
+            if idx < 0 or idx >= len(self.candidates):
+                raise ValueError("Pilihan kondisi pembeda tidak valid.")
+
+        combined_condition = combine_conditions([self.candidates[idx]["condition"] for idx in indices])
         inference = self.pending.inference
         parent = find_node(self.kb["root"], inference["frontier_node_id"])
         if parent is None:
@@ -445,24 +746,36 @@ class RDREngine:
         side = inference["frontier_side"]
         if parent.get(side) is not None:
             raise ValueError("Cabang tujuan sudah terisi. Jalankan konsultasi ulang sebelum menambah rule.")
-        candidate = self.candidates[candidate_index]
+
         active_node = inference["result_node"]
-        # Guardrail: the selected predicate must truly separate the new case from the key case.
-        if not evaluate_condition(candidate["condition"], self.pending.case) or evaluate_condition(candidate["condition"], active_node["key_case"]):
-            raise ValueError("Kondisi harus benar untuk kasus baru dan salah untuk kasus kunci.")
+        key_case = active_node.get("key_case")
+        # Invarian RDR: kondisi harus benar pada kasus baru dan salah pada kasus kunci kesimpulan terakhir.
+        if not evaluate_condition(combined_condition, self.pending.case):
+            raise ValueError("Kondisi rule baru harus dipenuhi oleh kasus baru.")
+        if key_case and evaluate_condition(combined_condition, key_case):
+            raise ValueError("Kondisi rule baru tidak boleh dipenuhi oleh kasus kunci dari kesimpulan terakhir.")
+
         new_node = {
             "id": get_next_node_id(self.kb["root"]),
-            "condition": deepcopy(candidate["condition"]),
+            "condition": combined_condition,
             "conclusion": conclusion,
             "key_case": deepcopy(self.pending.case),
             "true_child": None,
             "false_child": None,
         }
         parent[side] = new_node
-        self.candidates = []
+
+        updated_inference = infer_case(self.kb["root"], self.pending.case)
+        self.last_trace = deepcopy(updated_inference["trace"])
+        self.last_result_node_id = updated_inference["result_node_id"]
+        customer_name = self.pending.customer_name
+        self.reset_consultation()
         return {
             "node": new_node,
             "parent_id": parent["id"],
             "side": side,
             "active_node_id": active_node["id"],
+            "overridden_conclusion": active_node.get("conclusion", ""),
+            "customer_name": customer_name,
+            "updated_inference": updated_inference,
         }

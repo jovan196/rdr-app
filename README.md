@@ -1,84 +1,68 @@
-# RDR Studio — Aplikasi Ripple Down Rules berbasis Python GUI
+# RDR Studio — Sistem Rekomendasi Pakar Berbasis Ripple Down Rules (RDR)
 
-Aplikasi desktop berbasis **Python Tkinter** untuk membantu pakar membuat sistem rekomendasi menggunakan metode Ripple Down Rules (RDR). Aplikasi menggunakan pustaka standar Python sehingga tidak memerlukan instalasi paket pihak ketiga.
+Aplikasi sistem rekomendasi AI berbasis **Ripple Down Rules (RDR)** menggunakan **Python** (antarmuka GUI **Tkinter** dan antarmuka **CLI**) untuk membantu pakar memberikan rekomendasi bagi konsumennya sekaligus membangun basis pengetahuan secara inkremental tanpa dependensi pustaka pihak ketiga.
 
-## Fitur
+## Kesesuaian dengan Spesifikasi Ripple Down Rules (RDR)
 
-- Knowledge base dimulai dari satu rule root dengan kondisi `t` (selalu benar) dan kesimpulan default yang dapat diubah.
-- Konsultasi konsumen dengan formulir atribut dinamis.
-- Mendukung atribut **numerik** dan **kategorikal**.
-- Penelusuran binary tree: kondisi benar menuju **anak kanan / true-child**, kondisi salah menuju **anak kiri / false-child**.
-- Pakar dapat menyetujui kesimpulan atau menolak dan membuat rule pengecualian.
-- Kandidat kondisi pembeda dibuat otomatis dari kasus baru dan kasus kunci kesimpulan aktif:
-  - Numerik: memakai titik tengah nilai kasus baru dan kasus kunci (`≥` atau `≤`).
-  - Kategorikal: memakai kesamaan nilai kategori kasus baru (`=`).
-- Kasus yang disetujui dapat menjadi kasus kunci jika rule tersebut belum memilikinya.
-- Visualisasi pohon rule, detail rule, serta jejak inferensi.
-- Knowledge base dapat disimpan/dibuka sebagai file JSON.
-- Contoh domain rekomendasi laptop siap dicoba dan dapat diganti melalui tab Basis Pengetahuan.
+- **Rule awal default (`t → kesimpulan default`)**: Knowledge base berawal hanya dengan satu rule pada root (`R0`) yang kondisinya selalu benar (`t`), dengan kesimpulan default yang dapat diisi dan disesuaikan menurut domain masalah.
+- **Penelusuran pohon biner (Binary Tree)**:
+  - **Anak kanan (`true-child`)**: menggambarkan perkecualian dari node saat ini; dieksekusi ketika kondisi node **terpenuhi** (`True`), dan kesimpulan node tersebut menganulir kesimpulan aktif sebelumnya.
+  - **Anak kiri (`false-child`)**: dieksekusi ketika kondisi node **tidak terpenuhi** (`False`), sambil mempertahankan kesimpulan aktif sebelumnya.
+- **Kesimpulan akhir**: Sistem memberikan **kesimpulan terakhir yang diperoleh** sepanjang jalur penelusuran (karena kesimpulan sebelumnya telah dianulir oleh kesimpulan yang lebih baru).
+- **Evaluasi pakar**:
+  - **Jika pakar setuju**: rekomendasi tersebut diberikan kepada konsumen dan proses konsultasi selesai (jika rule aktif belum memiliki kasus kunci, kasus ini disimpan sebagai kasus kuncinya).
+  - **Jika pakar tidak setuju**: sistem membuat rule perkecualian baru pada cabang berhentinya penelusuran (`true-child` atau `false-child`), dengan kesimpulan dari pakar dan kondisi yang dipilih dari kondisi yang **dipenuhi oleh kasus baru** serta **tidak dipenuhi oleh kasus kunci dari kesimpulan terakhir** yang dianulir.
+  - Mendukung pemilihan **satu atau beberapa kondisi sekaligus (konjungsi `DAN`)** maupun penambahan **kondisi ambang kustom** yang divalidasi otomatis terhadap kasus baru dan kasus kunci.
+  - Jika kasus pertama langsung ditolak saat `R0` belum memiliki kasus kunci spesifik, kasus kunci `R0` diperlakukan kosong sehingga pakar dapat langsung membuat rule perkecualian pertama tanpa terhambat.
+- **Atribut numerik & kategorikal**: Mendukung atribut **numerik** (`=`, `≠`, `>`, `≥`, `<`, `≤`) dan **kategorikal** (`=`, `≠`, baik dengan pilihan kategori terdefinisi maupun teks bebas).
+- **Visualisasi pohon biner 2D**: Tab **Pohon Biner RDR** menampilkan diagram visual pohon biner secara langsung (**Kiri = `false-child`**, **Kanan = `true-child`**) beserta sorotan jalur inferensi dan detail kasus kunci tiap rule.
 
 ## Arsitektur
 
-Aplikasi dipisahkan antara **inti aplikasi** dan **antarmuka**:
+Aplikasi dipisahkan secara bersih antara **inti mesin RDR** dan **antarmuka**:
 
-- `rdr_core.py` — inti aplikasi murni tanpa dependensi antarmuka: mesin inferensi, validasi knowledge base, pembentukan kandidat pengecualian, muat/simpan JSON, serta kelas `RDREngine` yang mengelola alur konsultasi dan update knowledge.
-- `main.py` — GUI Tkinter; hanya menggambar antarmuka dan memanggil `RDREngine`.
-- `cli.py` — antarmuka baris perintah; juga hanya memanggil `RDREngine`.
+- `rdr_core.py` — inti aplikasi murni tanpa dependensi antarmuka: mesin inferensi pohon biner, pembentukan kandidat pembeda & validasi kondisi kustom/konjungsi, validasi knowledge base, muat/simpan JSON, serta kelas `RDREngine`.
+- `main.py` — antarmuka grafis (GUI) Tkinter beserta kanvas diagram pohon biner 2D.
+- `cli.py` — antarmuka baris perintah (CLI) interaktif dengan fitur lengkap (konsultasi, evaluasi pakar, konfigurasi domain/kesimpulan default, kelola atribut, tampilan pohon biner, dan simpan/muat JSON).
 
-Karena inti aplikasi tidak bergantung pada GUI, antarmuka lain (mis. web) dapat memakai `rdr_core.py` secara langsung.
+## Cara Menjalankan
 
-## Cara menjalankan
+Pastikan Python 3.9 atau lebih baru tersedia.
 
-Pastikan Python 3.9 atau lebih baru tersedia. Tkinter umumnya sudah disertakan pada distribusi Python desktop.
-
-GUI:
+### GUI (Tkinter)
 
 ```bash
 python main.py
 ```
 
-CLI (opsional dapat membuka berkas knowledge base langsung):
+### CLI (Terminal)
 
 ```bash
 python cli.py [knowledge_base.json]
 ```
 
-Pada sebagian instalasi Linux, apabila Tkinter belum ada, pasang paket sistem `python3-tk` terlebih dahulu (khusus GUI; CLI tidak memerlukan Tkinter).
+## Cara Mencoba Aplikasi (GUI)
 
-## Cara mencoba aplikasi
+1. Jalankan `python main.py`. Secara bawaan sistem memuat contoh domain rekomendasi laptop yang hanya berisi satu rule awal `R0` (`t → kesimpulan default`). Untuk mengganti domain masalah atau membuat KB kosong dari awal, buka tab **Basis Pengetahuan** atau menu **File → Knowledge Base Baru (Kosong)**.
+2. Pada tab **Konsultasi Konsumen**, isi nilai seluruh atribut konsumen lalu klik **Jalankan konsultasi**. Sistem menelusuri pohon biner dan menampilkan kesimpulan terakhir yang diperoleh beserta jejak penelusurannya.
+3. Evaluasi oleh pakar:
+   - Klik **✓ Pakar Setuju (Selesai)** apabila kesimpulan sudah tepat. Rekomendasi diberikan kepada konsumen dan proses selesai.
+   - Klik **✗ Tidak Sesuai · Buat Rule Perkecualian** apabila kesimpulan belum tepat. Centang satu atau beberapa kondisi pembeda (atau tambahkan kondisi kustom), isi **Kesimpulan rekomendasi dari pakar**, lalu klik **Simpan Rule Perkecualian & Berikan Rekomendasi**.
+4. Buka tab **Pohon Biner RDR** untuk melihat struktur visual **Anak Kiri (`false-child`)** dan **Anak Kanan (`true-child`)**, klik node mana pun untuk memeriksa kondisi, kesimpulan, dan kasus kuncinya.
+5. Simpan knowledge base melalui menu **File → Simpan Sebagai…** (`Ctrl+S`).
 
-1. Jalankan aplikasi. Tab **Konsultasi** menampilkan contoh atribut rekomendasi laptop.
-2. Isi semua atribut dan klik **Jalankan konsultasi**. Aplikasi menampilkan kesimpulan default dan jejak penelusuran.
-3. Klik **Sesuai** untuk menyimpan kasus pertama sebagai kasus kunci kesimpulan default. Ini penting karena kasus kunci menjadi pembanding saat pakar membuat pengecualian.
-4. Ubah satu atau beberapa atribut pada kasus berikutnya, lalu jalankan konsultasi.
-5. Klik **Tidak sesuai — buat rule**. Pilih kondisi pembeda yang diusulkan aplikasi, masukkan kesimpulan pakar, lalu klik **Simpan rule pengecualian**.
-6. Jalankan konsultasi ulang untuk menguji rule baru. Pohon dapat dilihat pada tab **Pohon Rule**.
-7. Simpan knowledge base melalui menu **File → Simpan Sebagai…**.
+## Pengujian Mesin RDR
 
-## Cara kerja inferensi
-
-Setiap node menyimpan kondisi, kesimpulan, kasus kunci, true-child, dan false-child. Jika kondisi node benar, kesimpulan node menjadi kesimpulan aktif dan inferensi mengikuti true-child. Jika kondisi node salah, kesimpulan aktif sebelumnya tetap berlaku dan inferensi mengikuti false-child. Penelusuran berhenti ketika cabang yang dipilih belum memiliki anak; kesimpulan aktif terakhir menjadi hasil sistem.
-
-Ketika pakar menolak kesimpulan, aplikasi memilih node hasil (kesimpulan aktif) sebagai acuan kasus kunci. Kondisi pembeda yang diusulkan selalu diuji agar bernilai benar untuk kasus baru dan salah untuk kasus kunci. Rule baru ditempatkan pada cabang kosong yang ditempuh oleh kasus baru dari node frontier.
-
-**Catatan metodologis:** rule default perlu memiliki satu kasus kunci yang disetujui pakar sebelum pengecualian pertama dapat dibuat. Ini mencegah aplikasi mengarang kasus pembanding yang belum divalidasi pakar.
-
-## Pengujian mesin RDR
-
-Jalankan unit test:
+Jalankan seluruh unit test:
 
 ```bash
 python -m unittest -v test.py
 ```
 
-## Berkas
+## Daftar Berkas
 
-- `rdr_core.py` — inti aplikasi (mesin inferensi, validasi, dan alur update knowledge) tanpa dependensi antarmuka.
-- `main.py` — antarmuka grafis (GUI) Tkinter.
+- `rdr_core.py` — inti aplikasi (mesin inferensi RDR, validasi atribut numerik/kategorikal, kandidat kondisi pembeda, konjungsi `DAN`, dan alur update knowledge).
+- `main.py` — antarmuka grafis (GUI) Tkinter beserta visualisasi diagram pohon biner.
 - `cli.py` — antarmuka baris perintah (CLI).
-- `test.py` — unit test untuk inferensi, true/false branch, dan pembentukan kondisi pembeda.
-- `knowledge_base.json` — contoh knowledge base yang dapat langsung dibuka di aplikasi.
-
-## Pengumpulan tugas kelompok
-
-Serahkan folder proyek ini dalam bentuk ZIP ke Edunex. Sesuai instruksi tugas, **wakil kelompok dengan NIM terbesar** yang melakukan submit. Pastikan `rdr_core.py`, `main.py`, `cli.py`, `README.md`, `test.py`, dan `knowledge_base.json` ikut disertakan.
+- `test.py` — unit test untuk inferensi, pencabangan `true-child`/`false-child`, kasus kunci, kondisi konjungsi/kustom, dan serialisasi JSON.
+- `knowledge_base.json` — contoh knowledge base awal (1 rule default `R0`) yang siap dibuka di aplikasi.
