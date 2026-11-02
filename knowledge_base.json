@@ -1,0 +1,57 @@
+{
+  "version": 1,
+  "domain": "Rekomendasi laptop untuk konsumen (contoh; dapat diubah)",
+  "attributes": [
+    {
+      "name": "anggaran_juta",
+      "type": "numeric",
+      "choices": []
+    },
+    {
+      "name": "penggunaan",
+      "type": "categorical",
+      "choices": [
+        "Kantor",
+        "Kuliah",
+        "Desain",
+        "Gaming"
+      ]
+    },
+    {
+      "name": "mobilitas",
+      "type": "categorical",
+      "choices": [
+        "Tinggi",
+        "Sedang",
+        "Rendah"
+      ]
+    },
+    {
+      "name": "ram_minimum_gb",
+      "type": "numeric",
+      "choices": []
+    },
+    {
+      "name": "preferensi_os",
+      "type": "categorical",
+      "choices": [
+        "Windows",
+        "macOS",
+        "Linux",
+        "Bebas"
+      ]
+    }
+  ],
+  "root": {
+    "id": "R0",
+    "condition": {
+      "attribute": null,
+      "operator": "always",
+      "value": true
+    },
+    "conclusion": "Rekomendasi umum: pilih laptop kelas menengah yang seimbang untuk aktivitas harian. Sesuaikan prosesor, RAM, layar, dan garansi dengan kebutuhan serta anggaran konsumen.",
+    "key_case": null,
+    "true_child": null,
+    "false_child": null
+  }
+}
