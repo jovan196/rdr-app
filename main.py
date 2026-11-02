@@ -260,6 +260,48 @@ class AttributeDialog(tk.Toplevel):
         self.destroy()
 
 
+class ScrollFrame(ttk.Frame):
+    """Frame dengan scroll vertikal (pola standar Canvas + Scrollbar Tkinter)."""
+
+    def __init__(self, parent: tk.Misc):
+        super().__init__(parent, style="Card.TFrame")
+        self.canvas = tk.Canvas(self, bg="#ffffff", highlightthickness=0, bd=0)
+        self.scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.canvas.yview)
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        self.inner = ttk.Frame(self.canvas, style="Card.TFrame")
+        self._inner_window = self.canvas.create_window((0, 0), window=self.inner, anchor="nw")
+        self.inner.bind("<Configure>", self._on_inner_configure)
+        self.canvas.bind("<Configure>", self._on_canvas_configure)
+        self.bind_all("<MouseWheel>", self._on_mousewheel)
+        self.bind("<Destroy>", self._on_destroy)
+
+    def _on_inner_configure(self, _event):
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+
+    def _on_canvas_configure(self, event):
+        self.canvas.itemconfigure(self._inner_window, width=event.width)
+
+    def _on_mousewheel(self, event):
+        # Gulir hanya jika kursor berada di atas area scroll ini.
+        widget = self.winfo_containing(event.x_root, event.y_root)
+        while widget is not None:
+            if widget is self.canvas:
+                self.canvas.yview_scroll(int(-event.delta / 120), "units")
+                return
+            widget = getattr(widget, "master", None)
+
+    def _on_destroy(self, event):
+        if event.widget is self:
+            self.unbind_all("<MouseWheel>")
+
+    def scroll_to_bottom(self):
+        self.inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.yview_moveto(1.0)
+
+
 class RDRApp(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -372,30 +414,35 @@ class RDRApp(tk.Tk):
         ttk.Button(self.consult_button_row, text="Jalankan konsultasi", style="Accent.TButton", command=self.run_consultation).pack(side="left")
         ttk.Button(self.consult_button_row, text="Kosongkan form", command=self.clear_form).pack(side="left", padx=(8, 0))
 
-        ttk.Label(result_card, text="Hasil penalaran", style="CardTitle.TLabel").pack(anchor="w")
-        ttk.Label(result_card, text="Kesimpulan aktif dan jejak penelusuran pohon RDR.", style="Hint.TLabel").pack(anchor="w", pady=(3, 10))
+        self.result_scroll = ScrollFrame(result_card)
+        self.result_scroll.pack(fill="both", expand=True)
+        result_body = self.result_scroll.inner
+
+        ttk.Label(result_body, text="Hasil penalaran", style="CardTitle.TLabel").pack(anchor="w")
+        ttk.Label(result_body, text="Kesimpulan aktif dan jejak penelusuran pohon RDR.", style="Hint.TLabel").pack(anchor="w", pady=(3, 10))
         self.result_domain_var = tk.StringVar(value="Belum ada konsultasi")
-        ttk.Label(result_card, textvariable=self.result_domain_var, style="Field.TLabel").pack(anchor="w", pady=(0, 5))
-        self.result_text = tk.Text(result_card, height=6, wrap="word", font=("Segoe UI", 10), bg="#f7f9fc", fg="#243b53", relief="flat", padx=12, pady=10)
+        ttk.Label(result_body, textvariable=self.result_domain_var, style="Field.TLabel").pack(anchor="w", pady=(0, 5))
+        self.result_text = tk.Text(result_body, height=4, wrap="word", font=("Segoe UI", 10), bg="#f7f9fc", fg="#243b53", relief="flat", padx=12, pady=10)
         self.result_text.pack(fill="x")
         self.result_text.insert("1.0", "Jalankan konsultasi untuk melihat rekomendasi dari knowledge base.")
         self.result_text.configure(state="disabled")
-        ttk.Label(result_card, text="Jejak penelusuran", style="Field.TLabel").pack(anchor="w", pady=(12, 5))
-        self.trace_text = tk.Text(result_card, height=8, wrap="word", font=("Consolas", 9), bg="#f7f9fc", fg="#486581", relief="flat", padx=10, pady=8)
-        self.trace_text.pack(fill="both", expand=True)
+        ttk.Label(result_body, text="Jejak penelusuran", style="Field.TLabel").pack(anchor="w", pady=(12, 5))
+        self.trace_text = tk.Text(result_body, height=5, wrap="word", font=("Consolas", 9), bg="#f7f9fc", fg="#486581", relief="flat", padx=10, pady=8)
+        self.trace_text.pack(fill="x", expand=False)
         self.trace_text.insert("1.0", "Belum ada jejak.")
         self.trace_text.configure(state="disabled")
 
-        self.feedback_frame = ttk.Frame(result_card, style="Card.TFrame")
+        self.feedback_frame = ttk.Frame(result_body, style="Card.TFrame")
         self.feedback_frame.pack(fill="x", pady=(12, 0))
-        ttk.Label(self.feedback_frame, text="Apakah rekomendasi ini sesuai menurut pakar?", style="Field.TLabel").pack(anchor="w", pady=(0, 8))
+        ttk.Label(self.feedback_frame, text="UPDATE KNOWLEDGE / EVALUASI PAKAR", style="CardTitle.TLabel").pack(anchor="w", pady=(0, 3))
+        ttk.Label(self.feedback_frame, text="Setujui hasil, atau klik UPDATE KNOWLEDGE untuk membuat rule pengecualian dan memperbarui pohon.", style="Hint.TLabel", wraplength=440, justify="left").pack(anchor="w", pady=(0, 8))
         buttons = ttk.Frame(self.feedback_frame, style="Card.TFrame")
         buttons.pack(fill="x")
         self.accept_button = ttk.Button(buttons, text="Sesuai", style="Success.TButton", command=self.accept_result, state="disabled")
         self.accept_button.pack(side="left")
-        self.reject_button = ttk.Button(buttons, text="Tidak sesuai — buat rule", style="Danger.TButton", command=self.reject_result, state="disabled")
+        self.reject_button = ttk.Button(buttons, text="UPDATE KNOWLEDGE · Tidak sesuai", style="Danger.TButton", command=self.reject_result, state="disabled")
         self.reject_button.pack(side="left", padx=(8, 0))
-        self.rule_editor = ttk.Frame(result_card, style="Card.TFrame")
+        self.rule_editor = ttk.Frame(result_body, style="Card.TFrame")
         self.rule_editor.pack(fill="x", pady=(12, 0))
 
     def _build_kb_tab(self):
@@ -487,6 +534,13 @@ class RDRApp(tk.Tk):
             "5. Pakar memilih salah satu kondisi pembeda dan memasukkan kesimpulan yang benar. Rule baru "
             "ditambahkan pada cabang yang ditempuh kasus baru. Ketika kondisi rule baru terpenuhi, "
             "kesimpulan yang lebih spesifik menggantikan kesimpulan sebelumnya.\n\n"
+            "PROSEDUR UPDATE KNOWLEDGE TREE:\n"
+            "A. Jalankan konsultasi dengan data konsumen.\n"
+            "B. Jika hasil benar, klik Sesuai (kasus pertama menjadi kasus kunci).\n"
+            "C. Jika hasil salah, klik UPDATE KNOWLEDGE · Tidak sesuai.\n"
+            "D. Pilih kondisi pembeda yang benar pada kasus baru dan salah pada kasus kunci.\n"
+            "E. Masukkan kesimpulan pakar, lalu klik Simpan rule pengecualian.\n"
+            "F. Buka tab Pohon Rule untuk melihat node baru pada true-child (kanan) atau false-child (kiri).\n\n"
             "6. Knowledge base dapat disimpan dan dibuka dalam format JSON melalui menu File. Atribut "
             "numerik dan kategorikal dapat ditambah, diedit, atau dihapus (atribut yang sedang dipakai "
             "oleh rule dilindungi agar struktur knowledge base tidak rusak).\n\n"
@@ -641,6 +695,7 @@ class RDRApp(tk.Tk):
                 style="Hint.TLabel", wraplength=460, justify="left"
             ).pack(anchor="w", pady=(4, 8))
             ttk.Button(self.rule_editor, text="Tutup", command=lambda: [w.destroy() for w in self.rule_editor.winfo_children()]).pack(anchor="e")
+            self.result_scroll.scroll_to_bottom()
             return
         candidates = build_candidates(self.kb["attributes"], self.pending.case, active_node["key_case"])
         if not candidates:
@@ -650,6 +705,7 @@ class RDRApp(tk.Tk):
                 text="Nilai atribut kasus baru sama dengan kasus kunci, atau tidak ada atribut yang dapat dibandingkan. Tambahkan atribut yang relevan atau periksa kembali data kasus.",
                 style="Hint.TLabel", wraplength=460, justify="left"
             ).pack(anchor="w", pady=(4, 8))
+            self.result_scroll.scroll_to_bottom()
             return
         ttk.Label(self.rule_editor, text=f"Buat rule pengecualian untuk {active_node['id']}", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(self.rule_editor, text="Pilih kondisi yang benar untuk kasus baru dan salah untuk kasus kunci:", style="Hint.TLabel").pack(anchor="w", pady=(3, 5))
@@ -663,6 +719,7 @@ class RDRApp(tk.Tk):
         self.expert_conclusion.pack(fill="x")
         self.expert_conclusion.insert("1.0", "")
         ttk.Button(self.rule_editor, text="Simpan rule pengecualian", style="Accent.TButton", command=self.save_exception_rule).pack(anchor="e", pady=(8, 0))
+        self.result_scroll.scroll_to_bottom()
 
     def save_exception_rule(self):
         if not self.pending:
