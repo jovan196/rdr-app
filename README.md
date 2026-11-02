@@ -17,15 +17,33 @@ Aplikasi desktop berbasis **Python Tkinter** untuk membantu pakar membuat sistem
 - Knowledge base dapat disimpan/dibuka sebagai file JSON.
 - Contoh domain rekomendasi laptop siap dicoba dan dapat diganti melalui tab Basis Pengetahuan.
 
+## Arsitektur
+
+Aplikasi dipisahkan antara **inti aplikasi** dan **antarmuka**:
+
+- `rdr_core.py` — inti aplikasi murni tanpa dependensi antarmuka: mesin inferensi, validasi knowledge base, pembentukan kandidat pengecualian, muat/simpan JSON, serta kelas `RDREngine` yang mengelola alur konsultasi dan update knowledge.
+- `main.py` — GUI Tkinter; hanya menggambar antarmuka dan memanggil `RDREngine`.
+- `cli.py` — antarmuka baris perintah; juga hanya memanggil `RDREngine`.
+
+Karena inti aplikasi tidak bergantung pada GUI, antarmuka lain (mis. web) dapat memakai `rdr_core.py` secara langsung.
+
 ## Cara menjalankan
 
 Pastikan Python 3.9 atau lebih baru tersedia. Tkinter umumnya sudah disertakan pada distribusi Python desktop.
 
+GUI:
+
 ```bash
-python rdr_app.py
+python main.py
 ```
 
-Pada sebagian instalasi Linux, apabila Tkinter belum ada, pasang paket sistem `python3-tk` terlebih dahulu.
+CLI (opsional dapat membuka berkas knowledge base langsung):
+
+```bash
+python cli.py [knowledge_base.json]
+```
+
+Pada sebagian instalasi Linux, apabila Tkinter belum ada, pasang paket sistem `python3-tk` terlebih dahulu (khusus GUI; CLI tidak memerlukan Tkinter).
 
 ## Cara mencoba aplikasi
 
@@ -50,15 +68,17 @@ Ketika pakar menolak kesimpulan, aplikasi memilih node hasil (kesimpulan aktif) 
 Jalankan unit test:
 
 ```bash
-python -m unittest -v test_rdr.py
+python -m unittest -v test.py
 ```
 
 ## Berkas
 
-- `rdr_app.py` — aplikasi GUI dan mesin inferensi.
-- `test_rdr.py` — unit test untuk inferensi, true/false branch, dan pembentukan kondisi pembeda.
-- `contoh_knowledge_base.json` — contoh knowledge base yang dapat langsung dibuka di aplikasi.
+- `rdr_core.py` — inti aplikasi (mesin inferensi, validasi, dan alur update knowledge) tanpa dependensi antarmuka.
+- `main.py` — antarmuka grafis (GUI) Tkinter.
+- `cli.py` — antarmuka baris perintah (CLI).
+- `test.py` — unit test untuk inferensi, true/false branch, dan pembentukan kondisi pembeda.
+- `knowledge_base.json` — contoh knowledge base yang dapat langsung dibuka di aplikasi.
 
 ## Pengumpulan tugas kelompok
 
-Serahkan folder proyek ini dalam bentuk ZIP ke Edunex. Sesuai instruksi tugas, **wakil kelompok dengan NIM terbesar** yang melakukan submit. Pastikan `rdr_app.py`, `README.md`, `test_rdr.py`, dan `contoh_knowledge_base.json` ikut disertakan.
+Serahkan folder proyek ini dalam bentuk ZIP ke Edunex. Sesuai instruksi tugas, **wakil kelompok dengan NIM terbesar** yang melakukan submit. Pastikan `rdr_core.py`, `main.py`, `cli.py`, `README.md`, `test.py`, dan `knowledge_base.json` ikut disertakan.

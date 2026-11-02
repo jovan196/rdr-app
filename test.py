@@ -1,7 +1,7 @@
 """Unit tests for the RDR inference and exception-candidate engine."""
 import unittest
 
-from main import build_candidates, evaluate_condition, infer_case, make_sample_kb
+from rdr_core import build_candidates, evaluate_condition, infer_case, make_sample_kb
 
 class RDRCoreTests(unittest.TestCase):
     def setUp(self):

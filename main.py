@@ -1,216 +1,26 @@
-"""Ripple Down Rules (RDR) Expert Recommendation System.
+"""RDR Studio — antarmuka grafis (GUI) untuk sistem rekomendasi RDR.
 
-A standard-library-only Tkinter desktop application.
+Seluruh logika inti (inferensi, validasi, update knowledge) berada di
+rdr_core.py; modul ini hanya menggambar antarmuka dan memanggil RDREngine.
 Run with: python main.py
 """
 from __future__ import annotations
 
 import json
-import math
 import tkinter as tk
-from copy import deepcopy
-from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, simpledialog, ttk
+from tkinter import filedialog, messagebox, ttk
 from typing import Any, Optional
 
-APP_TITLE = "RDR Studio — Sistem Rekomendasi Pakar"
-APP_VERSION = "1.0.0"
-
-
-def make_sample_kb() -> dict[str, Any]:
-    """Return a ready-to-try sample knowledge base (laptop recommendation domain)."""
-    return {
-        "version": 1,
-        "domain": "Rekomendasi laptop untuk konsumen (contoh; dapat diubah)",
-        "attributes": [
-            {"name": "anggaran_juta", "type": "numeric", "choices": []},
-            {"name": "penggunaan", "type": "categorical", "choices": ["Kantor", "Kuliah", "Desain", "Gaming"]},
-            {"name": "mobilitas", "type": "categorical", "choices": ["Tinggi", "Sedang", "Rendah"]},
-            {"name": "ram_minimum_gb", "type": "numeric", "choices": []},
-            {"name": "preferensi_os", "type": "categorical", "choices": ["Windows", "macOS", "Linux", "Bebas"]},
-        ],
-        "root": {
-            "id": "R0",
-            "condition": {"attribute": None, "operator": "always", "value": True},
-            "conclusion": (
-                "Rekomendasi umum: pilih laptop kelas menengah yang seimbang untuk "
-                "aktivitas harian. Sesuaikan prosesor, RAM, layar, dan garansi dengan "
-                "kebutuhan serta anggaran konsumen."
-            ),
-            "key_case": None,
-            "true_child": None,
-            "false_child": None,
-        },
-    }
-
-
-def condition_text(condition: dict[str, Any]) -> str:
-    op = condition.get("operator", "always")
-    if op == "always":
-        return "SELALU BENAR (t)"
-    attr = condition.get("attribute", "?")
-    value = condition.get("value")
-    symbols = {"eq": "=", "ne": "≠", "gt": ">", "ge": "≥", "lt": "<", "le": "≤"}
-    return f"{attr} {symbols.get(op, op)} {value}"
-
-
-def evaluate_condition(condition: dict[str, Any], case: dict[str, Any]) -> bool:
-    op = condition.get("operator", "always")
-    if op == "always":
-        return True
-    attr = condition.get("attribute")
-    if attr not in case:
-        return False
-    actual = case[attr]
-    expected = condition.get("value")
-    if op in {"eq", "ne"}:
-        result = str(actual).strip().casefold() == str(expected).strip().casefold()
-        return result if op == "eq" else not result
-    try:
-        a, b = float(actual), float(expected)
-    except (TypeError, ValueError):
-        return False
-    if not (math.isfinite(a) and math.isfinite(b)):
-        return False
-    if op == "gt":
-        return a > b
-    if op == "ge":
-        return a >= b
-    if op == "lt":
-        return a < b
-    if op == "le":
-        return a <= b
-    return False
-
-
-def iter_nodes(node: Optional[dict[str, Any]]):
-    if not node:
-        return
-    yield node
-    yield from iter_nodes(node.get("true_child"))
-    yield from iter_nodes(node.get("false_child"))
-
-
-def find_node(root: dict[str, Any], node_id: str) -> Optional[dict[str, Any]]:
-    for node in iter_nodes(root):
-        if node.get("id") == node_id:
-            return node
-    return None
-
-
-def get_next_node_id(root: dict[str, Any]) -> str:
-    used = {str(n.get("id", "")) for n in iter_nodes(root)}
-    index = 1
-    while f"R{index}" in used:
-        index += 1
-    return f"R{index}"
-
-
-def infer_case(root: dict[str, Any], case: dict[str, Any]) -> dict[str, Any]:
-    """Traverse the binary rule tree and return the last conclusion whose condition is true.
-
-    A true condition activates that node's conclusion and follows its true-child.
-    A false condition preserves the last active conclusion and follows false-child.
-    Traversal stops when the selected child does not exist.
-    """
-    current = root
-    active_node: Optional[dict[str, Any]] = None
-    trace: list[dict[str, Any]] = []
-    frontier_node = root
-    frontier_side = "true_child"
-    while current is not None:
-        matched = evaluate_condition(current["condition"], case)
-        side = "true_child" if matched else "false_child"
-        if matched:
-            active_node = current
-        trace.append({
-            "node_id": current["id"],
-            "condition": condition_text(current["condition"]),
-            "matched": matched,
-            "branch": "KANAN / TRUE" if matched else "KIRI / FALSE",
-            "activated": matched,
-            "conclusion": current.get("conclusion", ""),
-        })
-        child = current.get(side)
-        if child is None:
-            frontier_node = current
-            frontier_side = side
-            break
-        current = child
-    if active_node is None:
-        # The seeded root condition is always true; this is a defensive fallback.
-        active_node = root
-    return {
-        "conclusion": active_node.get("conclusion", ""),
-        "result_node_id": active_node["id"],
-        "result_node": active_node,
-        "trace": trace,
-        "frontier_node_id": frontier_node["id"],
-        "frontier_side": frontier_side,
-    }
-
-
-def build_candidates(attributes: list[dict[str, Any]], case: dict[str, Any], key_case: dict[str, Any]) -> list[dict[str, Any]]:
-    """Build predicates true for the new case and false for its prior conclusion's key case."""
-    candidates: list[dict[str, Any]] = []
-    for attr in attributes:
-        name = attr["name"]
-        if name not in case or name not in key_case:
-            continue
-        new_value, old_value = case[name], key_case[name]
-        if attr["type"] == "numeric":
-            try:
-                new_num, old_num = float(new_value), float(old_value)
-            except (TypeError, ValueError):
-                continue
-            if not (math.isfinite(new_num) and math.isfinite(old_num)) or new_num == old_num:
-                continue
-            midpoint = (new_num + old_num) / 2.0
-            if new_num > old_num:
-                condition = {"attribute": name, "operator": "ge", "value": midpoint}
-                detail = f"{name} ≥ {midpoint:g} (kasus baru: {new_num:g}; kasus kunci: {old_num:g})"
-            else:
-                condition = {"attribute": name, "operator": "le", "value": midpoint}
-                detail = f"{name} ≤ {midpoint:g} (kasus baru: {new_num:g}; kasus kunci: {old_num:g})"
-            candidates.append({"condition": condition, "label": detail})
-        else:
-            if str(new_value).strip().casefold() == str(old_value).strip().casefold():
-                continue
-            condition = {"attribute": name, "operator": "eq", "value": str(new_value)}
-            detail = f'{name} = "{new_value}" (kasus kunci: "{old_value}")'
-            candidates.append({"condition": condition, "label": detail})
-    return candidates
-
-
-def validate_case(attributes: list[dict[str, Any]], raw_values: dict[str, str]) -> tuple[dict[str, Any], list[str]]:
-    case: dict[str, Any] = {}
-    errors: list[str] = []
-    for attr in attributes:
-        name = attr["name"]
-        raw = raw_values.get(name, "").strip()
-        if not raw:
-            errors.append(f"Atribut '{name}' belum diisi.")
-            continue
-        if attr["type"] == "numeric":
-            try:
-                value = float(raw.replace(",", "."))
-                if not math.isfinite(value):
-                    raise ValueError
-                case[name] = value
-            except ValueError:
-                errors.append(f"Atribut '{name}' harus berupa angka yang valid.")
-        else:
-            case[name] = raw
-    return case, errors
-
-
-@dataclass
-class PendingConsultation:
-    case: dict[str, Any]
-    customer_name: str
-    inference: dict[str, Any]
+from rdr_core import (
+    APP_TITLE,
+    APP_VERSION,
+    RDREngine,
+    attribute_is_referenced,
+    condition_text,
+    find_node,
+    parse_attribute,
+)
 
 
 class AttributeDialog(tk.Toplevel):
@@ -247,16 +57,11 @@ class AttributeDialog(tk.Toplevel):
         self.geometry(f"+{parent.winfo_rootx()+100}+{parent.winfo_rooty()+100}")
 
     def save(self):
-        name = self.name_var.get().strip()
-        kind = self.type_var.get().strip()
-        if not name:
-            messagebox.showwarning("Validasi", "Nama atribut wajib diisi.", parent=self)
+        try:
+            self.result = parse_attribute(self.name_var.get(), self.type_var.get(), self.choices_var.get())
+        except ValueError as exc:
+            messagebox.showwarning("Validasi", str(exc), parent=self)
             return
-        if any(ch.isspace() for ch in name):
-            messagebox.showwarning("Validasi", "Gunakan nama atribut tanpa spasi (contoh: anggaran_juta).", parent=self)
-            return
-        choices = [x.strip() for x in self.choices_var.get().split(",") if x.strip()] if kind == "categorical" else []
-        self.result = {"name": name, "type": kind, "choices": choices}
         self.destroy()
 
 
@@ -309,9 +114,8 @@ class RDRApp(tk.Tk):
         self.geometry("1280x820")
         self.minsize(1080, 700)
         self.configure(bg="#f3f6fb")
-        self.kb = make_sample_kb()
+        self.engine = RDREngine()
         self.current_path: Optional[Path] = None
-        self.pending: Optional[PendingConsultation] = None
         self.case_vars: dict[str, tk.StringVar] = {}
         self.case_widgets: dict[str, ttk.Widget] = {}
         self.candidate_var = tk.IntVar(value=-1)
@@ -320,6 +124,11 @@ class RDRApp(tk.Tk):
         self._build_shell()
         self.refresh_all()
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    @property
+    def kb(self) -> dict[str, Any]:
+        """Jalan pintas ke knowledge base yang dikelola engine."""
+        return self.engine.kb
 
     def _build_style(self):
         style = ttk.Style(self)
@@ -615,7 +424,7 @@ class RDRApp(tk.Tk):
         self.tree_summary_var.set(f"{count} rule • cabang kanan = true-child • cabang kiri = false-child")
 
     def _clear_result(self):
-        self.pending = None
+        self.engine.reset_consultation()
         self.result_domain_var.set("Belum ada konsultasi")
         self._set_text(self.result_text, "Jalankan konsultasi untuk melihat rekomendasi dari knowledge base.")
         self._set_text(self.trace_text, "Belum ada jejak.")
@@ -638,16 +447,15 @@ class RDRApp(tk.Tk):
         self._clear_result()
 
     def run_consultation(self):
-        raw = {name: var.get() for name, var in self.case_vars.items()}
-        case, errors = validate_case(self.kb["attributes"], raw)
-        if errors:
-            messagebox.showwarning("Data kasus belum valid", "\n".join(errors), parent=self)
-            return
         if not self.kb["attributes"]:
             messagebox.showwarning("Atribut kosong", "Tambahkan atribut terlebih dahulu.", parent=self)
             return
-        inference = infer_case(self.kb["root"], case)
-        self.pending = PendingConsultation(case=case, customer_name=self.customer_name_var.get().strip(), inference=inference)
+        raw = {name: var.get() for name, var in self.case_vars.items()}
+        try:
+            inference = self.engine.run_consultation(raw, self.customer_name_var.get())
+        except ValueError as exc:
+            messagebox.showwarning("Data kasus belum valid", str(exc), parent=self)
+            return
         self.result_domain_var.set(f"Domain: {self.kb.get('domain', '-') }  |  Rule hasil: {inference['result_node_id']}")
         self._set_text(self.result_text, inference["conclusion"])
         lines = []
@@ -664,14 +472,13 @@ class RDRApp(tk.Tk):
         self.status_var.set(f"Konsultasi aktif • {len(inference['trace'])} node ditelusuri")
 
     def accept_result(self):
-        if not self.pending:
+        if not self.engine.pending:
             return
-        node = self.pending.inference["result_node"]
-        if node.get("key_case") is None:
-            node["key_case"] = deepcopy(self.pending.case)
-            message = f"Kasus disetujui dan disimpan sebagai kasus kunci untuk {node['id']}."
+        info = self.engine.accept_result()
+        if info["stored_key_case"]:
+            message = f"Kasus disetujui dan disimpan sebagai kasus kunci untuk {info['node_id']}."
         else:
-            message = f"Pakar menyetujui kesimpulan dari {node['id']}. Kasus kunci yang sudah ada tetap dipertahankan."
+            message = f"Pakar menyetujui kesimpulan dari {info['node_id']}. Kasus kunci yang sudah ada tetap dipertahankan."
         self._refresh_rule_tree()
         self.accept_button.configure(state="disabled")
         self.reject_button.configure(state="disabled")
@@ -679,13 +486,13 @@ class RDRApp(tk.Tk):
         messagebox.showinfo("Evaluasi pakar", message, parent=self)
 
     def reject_result(self):
-        if not self.pending:
+        if not self.engine.pending:
             return
         for child in self.rule_editor.winfo_children():
             child.destroy()
-        inference = self.pending.inference
-        active_node = inference["result_node"]
-        if active_node.get("key_case") is None:
+        active_node = self.engine.pending.inference["result_node"]
+        status, candidates = self.engine.prepare_exception()
+        if status == "no_key_case":
             ttk.Label(self.rule_editor, text="Kasus kunci belum tersedia", style="Field.TLabel").pack(anchor="w")
             ttk.Label(
                 self.rule_editor,
@@ -697,8 +504,7 @@ class RDRApp(tk.Tk):
             ttk.Button(self.rule_editor, text="Tutup", command=lambda: [w.destroy() for w in self.rule_editor.winfo_children()]).pack(anchor="e")
             self.result_scroll.scroll_to_bottom()
             return
-        candidates = build_candidates(self.kb["attributes"], self.pending.case, active_node["key_case"])
-        if not candidates:
+        if status == "no_candidates":
             ttk.Label(self.rule_editor, text="Tidak ditemukan kondisi pembeda", style="Field.TLabel").pack(anchor="w")
             ttk.Label(
                 self.rule_editor,
@@ -710,7 +516,6 @@ class RDRApp(tk.Tk):
         ttk.Label(self.rule_editor, text=f"Buat rule pengecualian untuk {active_node['id']}", style="CardTitle.TLabel").pack(anchor="w")
         ttk.Label(self.rule_editor, text="Pilih kondisi yang benar untuk kasus baru dan salah untuk kasus kunci:", style="Hint.TLabel").pack(anchor="w", pady=(3, 5))
         self.candidate_var.set(0)
-        self.current_candidates = candidates
         for i, candidate in enumerate(candidates):
             rb = ttk.Radiobutton(self.rule_editor, text=candidate["label"], value=i, variable=self.candidate_var)
             rb.pack(anchor="w", pady=2)
@@ -722,47 +527,29 @@ class RDRApp(tk.Tk):
         self.result_scroll.scroll_to_bottom()
 
     def save_exception_rule(self):
-        if not self.pending:
+        if not self.engine.pending:
             return
         conclusion = self.expert_conclusion.get("1.0", "end").strip()
         if not conclusion:
             messagebox.showwarning("Kesimpulan kosong", "Masukkan kesimpulan yang diberikan oleh pakar.", parent=self)
             return
         selected = self.candidate_var.get()
-        if selected < 0 or selected >= len(self.current_candidates):
+        if selected < 0 or selected >= len(self.engine.candidates):
             messagebox.showwarning("Kondisi belum dipilih", "Pilih salah satu kondisi pembeda.", parent=self)
             return
-        inference = self.pending.inference
-        parent = find_node(self.kb["root"], inference["frontier_node_id"])
-        if parent is None:
-            messagebox.showerror("Kesalahan", "Node tujuan tidak ditemukan pada pohon rule.", parent=self)
+        try:
+            info = self.engine.save_exception(selected, conclusion)
+        except ValueError as exc:
+            messagebox.showerror("Kesalahan", str(exc), parent=self)
             return
-        side = inference["frontier_side"]
-        if parent.get(side) is not None:
-            messagebox.showerror("Cabang terisi", "Cabang tujuan sudah terisi. Jalankan konsultasi ulang sebelum menambah rule.", parent=self)
-            return
-        candidate = self.current_candidates[selected]
-        # Guardrail: the selected predicate must truly separate the new case from the key case.
-        active_node = inference["result_node"]
-        if not evaluate_condition(candidate["condition"], self.pending.case) or evaluate_condition(candidate["condition"], active_node["key_case"]):
-            messagebox.showerror("Kondisi tidak valid", "Kondisi harus benar untuk kasus baru dan salah untuk kasus kunci.", parent=self)
-            return
-        new_node = {
-            "id": get_next_node_id(self.kb["root"]),
-            "condition": deepcopy(candidate["condition"]),
-            "conclusion": conclusion,
-            "key_case": deepcopy(self.pending.case),
-            "true_child": None,
-            "false_child": None,
-        }
-        parent[side] = new_node
+        new_node = info["node"]
         new_id = new_node["id"]
         self._refresh_rule_tree()
         self._set_text(self.result_text, conclusion)
-        self.result_domain_var.set(f"Rule baru: {new_id}  |  Pengecualian dari {active_node['id']}")
+        self.result_domain_var.set(f"Rule baru: {new_id}  |  Pengecualian dari {info['active_node_id']}")
         self._set_text(
             self.trace_text,
-            f"Rule {new_id} berhasil ditambahkan pada cabang {'KANAN / TRUE' if side == 'true_child' else 'KIRI / FALSE'} dari {parent['id']}.\n"
+            f"Rule {new_id} berhasil ditambahkan pada cabang {'KANAN / TRUE' if info['side'] == 'true_child' else 'KIRI / FALSE'} dari {info['parent_id']}.\n"
             f"Kondisi: {condition_text(new_node['condition'])}\n"
             f"Kasus baru menjadi kasus kunci rule {new_id}.\n\nJalankan konsultasi kembali untuk menguji rule baru."
         )
@@ -774,16 +561,11 @@ class RDRApp(tk.Tk):
         messagebox.showinfo("Rule ditambahkan", f"Rule pengecualian {new_id} berhasil disimpan ke knowledge base.", parent=self)
 
     def apply_kb_settings(self):
-        domain = self.domain_var.get().strip()
-        conclusion = self.default_text.get("1.0", "end").strip()
-        if not domain:
-            messagebox.showwarning("Validasi", "Nama domain wajib diisi.", parent=self)
+        try:
+            self.engine.apply_settings(self.domain_var.get(), self.default_text.get("1.0", "end"))
+        except ValueError as exc:
+            messagebox.showwarning("Validasi", str(exc), parent=self)
             return
-        if not conclusion:
-            messagebox.showwarning("Validasi", "Kesimpulan default tidak boleh kosong.", parent=self)
-            return
-        self.kb["domain"] = domain
-        self.kb["root"]["conclusion"] = conclusion
         self.status_var.set("Pengaturan knowledge base diterapkan")
         messagebox.showinfo("Tersimpan", "Domain dan kesimpulan default telah diperbarui.", parent=self)
         self._refresh_rule_tree()
@@ -793,10 +575,11 @@ class RDRApp(tk.Tk):
         self.wait_window(dialog)
         if dialog.result is None:
             return
-        if any(a["name"].casefold() == dialog.result["name"].casefold() for a in self.kb["attributes"]):
-            messagebox.showwarning("Nama duplikat", "Nama atribut sudah digunakan.", parent=self)
+        try:
+            self.engine.add_attribute(dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Nama duplikat", str(exc), parent=self)
             return
-        self.kb["attributes"].append(dialog.result)
         self._refresh_attributes()
         self._refresh_case_form()
 
@@ -811,24 +594,13 @@ class RDRApp(tk.Tk):
         self.wait_window(dialog)
         if dialog.result is None:
             return
-        if any(i != index and a["name"].casefold() == dialog.result["name"].casefold() for i, a in enumerate(self.kb["attributes"])):
-            messagebox.showwarning("Nama duplikat", "Nama atribut sudah digunakan.", parent=self)
+        try:
+            self.engine.update_attribute(index, dialog.result)
+        except ValueError as exc:
+            messagebox.showwarning("Atribut tidak dapat diubah", str(exc), parent=self)
             return
-        used = self._attribute_is_referenced(old["name"])
-        if used and (dialog.result["name"] != old["name"] or dialog.result["type"] != old["type"]):
-            messagebox.showwarning("Atribut sedang digunakan", "Nama atau jenis atribut tidak dapat diubah karena sudah dipakai oleh kondisi rule atau kasus kunci. Pilihan kategori masih dapat diperbarui.", parent=self)
-            return
-        self.kb["attributes"][index] = dialog.result
         self._refresh_attributes()
         self._refresh_case_form()
-
-    def _attribute_is_referenced(self, name: str) -> bool:
-        for node in iter_nodes(self.kb["root"]):
-            if node.get("condition", {}).get("attribute") == name:
-                return True
-            if name in (node.get("key_case") or {}):
-                return True
-        return False
 
     def delete_attribute(self):
         selection = self.attr_tree.selection()
@@ -837,11 +609,11 @@ class RDRApp(tk.Tk):
             return
         index = int(selection[0])
         attr = self.kb["attributes"][index]
-        if self._attribute_is_referenced(attr["name"]):
+        if attribute_is_referenced(self.kb["root"], attr["name"]):
             messagebox.showwarning("Atribut sedang digunakan", "Atribut ini sudah dipakai oleh rule atau kasus kunci sehingga tidak dapat dihapus.", parent=self)
             return
         if messagebox.askyesno("Hapus atribut", f"Hapus atribut '{attr['name']}'?", parent=self):
-            self.kb["attributes"].pop(index)
+            self.engine.delete_attribute(index)
             self._refresh_attributes()
             self._refresh_case_form()
 
@@ -866,16 +638,7 @@ class RDRApp(tk.Tk):
     def new_kb(self):
         if not messagebox.askyesno("Knowledge base baru", "Buat knowledge base baru? Perubahan yang belum disimpan akan hilang.", parent=self):
             return
-        self.kb = {
-            "version": 1,
-            "domain": "Domain baru",
-            "attributes": [],
-            "root": {
-                "id": "R0", "condition": {"attribute": None, "operator": "always", "value": True},
-                "conclusion": "Kesimpulan default belum diisi.", "key_case": None,
-                "true_child": None, "false_child": None,
-            },
-        }
+        self.engine.new_kb()
         self.current_path = None
         self.refresh_all()
         self.status_var.set("Knowledge base baru dibuat")
@@ -898,9 +661,7 @@ class RDRApp(tk.Tk):
 
     def _write_kb(self, path: Path):
         try:
-            payload = deepcopy(self.kb)
-            payload["saved_at"] = datetime.now().isoformat(timespec="seconds")
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            self.engine.save(path)
             self.status_var.set(f"Tersimpan: {path.name}")
             messagebox.showinfo("Knowledge base tersimpan", f"File berhasil disimpan:\n{path}", parent=self)
             return True
@@ -915,72 +676,12 @@ class RDRApp(tk.Tk):
         if not path:
             return
         try:
-            loaded = json.loads(Path(path).read_text(encoding="utf-8"))
-            self._validate_kb(loaded)
-            self.kb = loaded
-            self.kb.setdefault("version", 1)
+            self.engine.load(path)
             self.current_path = Path(path)
             self.refresh_all()
             self.status_var.set(f"Dibuka: {Path(path).name}")
         except (OSError, json.JSONDecodeError, ValueError, KeyError, TypeError) as exc:
             messagebox.showerror("Gagal membuka", f"File bukan knowledge base RDR yang valid.\n\nDetail: {exc}", parent=self)
-
-    @staticmethod
-    def _validate_kb(data: Any):
-        if not isinstance(data, dict) or not isinstance(data.get("attributes"), list) or not isinstance(data.get("root"), dict):
-            raise ValueError("Struktur utama tidak lengkap")
-        if not data.get("domain"):
-            raise ValueError("Domain kosong")
-        attr_types: dict[str, str] = {}
-        for attr in data["attributes"]:
-            if not isinstance(attr, dict) or not attr.get("name") or attr.get("type") not in {"numeric", "categorical"}:
-                raise ValueError("Definisi atribut tidak valid")
-            normalized_name = str(attr["name"]).casefold()
-            if normalized_name in attr_types:
-                raise ValueError("Nama atribut duplikat")
-            attr_types[normalized_name] = attr["type"]
-
-        seen_ids: set[str] = set()
-        allowed_ops = {"always", "eq", "ne", "gt", "ge", "lt", "le"}
-
-        def validate_node(node: Any):
-            if not isinstance(node, dict):
-                raise ValueError("Node rule harus berupa objek")
-            node_id = str(node.get("id", ""))
-            if not node_id or node_id in seen_ids:
-                raise ValueError("ID rule kosong atau duplikat")
-            seen_ids.add(node_id)
-            if not isinstance(node.get("condition"), dict) or not isinstance(node.get("conclusion"), str) or not node.get("conclusion").strip():
-                raise ValueError(f"Rule {node_id} tidak valid")
-            condition = node["condition"]
-            op = condition.get("operator")
-            if op not in allowed_ops:
-                raise ValueError(f"Operator kondisi pada {node_id} tidak dikenal")
-            if op != "always":
-                attr_name = str(condition.get("attribute", ""))
-                attr_type = attr_types.get(attr_name.casefold())
-                if attr_type is None:
-                    raise ValueError(f"Atribut pada rule {node_id} tidak ditemukan")
-                if attr_type == "categorical" and op not in {"eq", "ne"}:
-                    raise ValueError(f"Operator numerik tidak sesuai untuk atribut kategorikal pada {node_id}")
-                if attr_type == "numeric" and op in {"eq", "ne", "gt", "ge", "lt", "le"}:
-                    try:
-                        number = float(condition.get("value"))
-                        if not math.isfinite(number):
-                            raise ValueError
-                    except (TypeError, ValueError):
-                        raise ValueError(f"Nilai kondisi numerik pada {node_id} tidak valid")
-            key_case = node.get("key_case")
-            if key_case is not None and not isinstance(key_case, dict):
-                raise ValueError(f"Kasus kunci pada {node_id} tidak valid")
-            for child_name in ("true_child", "false_child"):
-                child = node.get(child_name)
-                if child is not None:
-                    validate_node(child)
-
-        validate_node(data["root"])
-        if data["root"]["condition"].get("operator") != "always":
-            raise ValueError("Kondisi root harus t / selalu benar")
 
     def show_about(self):
         messagebox.showinfo(
