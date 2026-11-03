@@ -2,6 +2,10 @@
 
 Aplikasi sistem rekomendasi AI berbasis **Ripple Down Rules (RDR)** menggunakan **Python** (antarmuka GUI **Tkinter** dan antarmuka **CLI**) untuk membantu pakar memberikan rekomendasi bagi konsumennya sekaligus membangun basis pengetahuan secara inkremental tanpa dependensi pustaka pihak ketiga.
 
+## Kelompok Tugas IF4070 Representasi Pengetahuan dan Penalaran (ITB 2026)
+- Boye Mangaratua Ginting (13523127)
+- Jovandra Otniel P. S. (13523141)
+
 ## Kesesuaian dengan Spesifikasi Ripple Down Rules (RDR)
 
 - **Rule awal default (`t → kesimpulan default`)**: Knowledge base berawal hanya dengan satu rule pada root (`R0`) yang kondisinya selalu benar (`t`), dengan kesimpulan default yang dapat diisi dan disesuaikan menurut domain masalah.
