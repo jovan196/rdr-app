@@ -117,6 +117,11 @@ class ScrollFrame(ttk.Frame):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(1.0)
 
+    def scroll_to_top(self):
+        self.inner.update_idletasks()
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.yview_moveto(0.0)
+
 
 class BinaryTreeCanvas(ttk.Frame):
     """Visualisasi diagram pohon biner RDR: Kiri = false-child, Kanan = true-child."""
@@ -475,7 +480,21 @@ class RDRApp(tk.Tk):
         self.accept_button.pack(side="left")
         self.reject_button = ttk.Button(buttons, text="✗ Tidak Sesuai · Buat Rule Perkecualian", style="Danger.TButton", command=self.reject_result, state="disabled")
         self.reject_button.pack(side="left", padx=(8, 0))
-        self.rule_editor = ttk.Frame(result_body, style="Card.TFrame")
+        self._rule_editor_parent = result_body
+        self.rule_editor: Optional[ttk.Frame] = None
+        self._reset_rule_editor()
+
+    def _reset_rule_editor(self):
+        """Kosongkan panel editor rule dengan membuat ulang frame-nya.
+
+        Frame Tkinter tidak menyusut kembali setelah anak-anaknya dihancurkan
+        (tinggi yang diminta tetap tersimpan), sehingga panel bekas form rule
+        akan meninggalkan ruang kosong ratusan piksel dan menahan posisi scroll
+        di bawah. Membuat ulang frame memastikan tinggi panel kembali nol.
+        """
+        if self.rule_editor is not None:
+            self.rule_editor.destroy()
+        self.rule_editor = ttk.Frame(self._rule_editor_parent, style="Card.TFrame")
         self.rule_editor.pack(fill="x", pady=(12, 0))
 
     def _build_kb_tab(self):
@@ -691,8 +710,7 @@ class RDRApp(tk.Tk):
         self._set_text(self.trace_text, "Belum ada jejak penelusuran.")
         self.accept_button.configure(state="disabled")
         self.reject_button.configure(state="disabled")
-        for child in self.rule_editor.winfo_children():
-            child.destroy()
+        self._reset_rule_editor()
 
     @staticmethod
     def _set_text(widget: tk.Text, content: str):
@@ -742,9 +760,9 @@ class RDRApp(tk.Tk):
         self._set_text(self.trace_text, self._format_trace_lines(inference))
         self.accept_button.configure(state="normal")
         self.reject_button.configure(state="normal")
-        for child in self.rule_editor.winfo_children():
-            child.destroy()
+        self._reset_rule_editor()
         self._refresh_rule_tree()
+        self.result_scroll.scroll_to_top()
         self.status_var.set(f"Menunggu evaluasi pakar • {len(inference['trace'])} node ditelusuri (kesimpulan {inference['result_node_id']})")
 
     def accept_result(self):
@@ -759,9 +777,9 @@ class RDRApp(tk.Tk):
         )
         self.result_domain_var.set(f"✓ PROSES SELESAI — Rekomendasi disetujui pakar{consumer_label} (Rule {info['node_id']})")
         self._set_text(self.result_text, info["conclusion"])
-        for child in self.rule_editor.winfo_children():
-            child.destroy()
+        self._reset_rule_editor()
         self._refresh_rule_tree()
+        self.result_scroll.scroll_to_top()
         self.accept_button.configure(state="disabled")
         self.reject_button.configure(state="disabled")
         self.status_var.set(f"Proses selesai • Rekomendasi {info['node_id']} diberikan kepada konsumen")
@@ -775,8 +793,7 @@ class RDRApp(tk.Tk):
     def reject_result(self):
         if not self.engine.pending:
             return
-        for child in self.rule_editor.winfo_children():
-            child.destroy()
+        self._reset_rule_editor()
         active_node = self.engine.pending.inference["result_node"]
         status, candidates = self.engine.prepare_exception()
         if status == "no_candidates":
@@ -935,8 +952,8 @@ class RDRApp(tk.Tk):
             f"Jejak verifikasi ulang pada pohon terbaru:\n"
             f"{self._format_trace_lines(info['updated_inference'])}",
         )
-        for child in self.rule_editor.winfo_children():
-            child.destroy()
+        self._reset_rule_editor()
+        self.result_scroll.scroll_to_top()
         self.accept_button.configure(state="disabled")
         self.reject_button.configure(state="disabled")
         self.status_var.set(f"Rule {new_id} ditambahkan • Rekomendasi diberikan kepada konsumen")
